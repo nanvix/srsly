@@ -130,4 +130,12 @@ install: $(ALL_LIBS)
 clean:
 	rm -f *.o $(ALL_LIBS)
 
-.PHONY: all clean install
+test: $(ALL_LIBS)
+	@echo "Running srsly tests..."
+	@for lib in $(ALL_LIBS); do \
+		test -f $$lib && echo "  OK: $$lib exists" || (echo "  FAIL: $$lib not found" && exit 1); \
+	done
+	@$(NANVIX_TOOLCHAIN)/bin/i686-nanvix-nm libsrsly_ujson.a | grep -q PyInit_ujson && echo "  OK: PyInit_ujson symbol found" || (echo "  FAIL: PyInit_ujson not found" && exit 1)
+	@echo "\t\t*** srsly tests PASSED ***"
+
+.PHONY: all clean install test
