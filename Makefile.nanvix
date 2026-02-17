@@ -1,0 +1,133 @@
+# Makefile.nanvix - srsly cross-compilation for Nanvix
+#
+# Copyright(c) The Maintainers of Nanvix.
+# Licensed under the MIT License.
+#
+# Usage:
+#   make -f Makefile.nanvix CONFIG_NANVIX=y NANVIX_HOME=/path/to/nanvix all
+#
+# Produces 4 static archives: libsrsly_ujson.a, libsrsly_msgpack_packer.a,
+# libsrsly_msgpack_unpacker.a, libsrsly_msgpack_epoch.a
+
+NANVIX_DOCKER_IMAGE ?= nanvix/toolchain:latest-minimal
+
+ifdef CONFIG_NANVIX
+  NANVIX_TOOLCHAIN ?= /opt/nanvix
+  NANVIX_HOME ?= $(HOME)/nanvix
+
+  ifndef CONFIG_NANVIX_DOCKER
+    ifeq ($(wildcard $(NANVIX_TOOLCHAIN)/bin/i686-nanvix-gcc),)
+      DOCKER_AVAILABLE := $(shell command -v docker 2>/dev/null)
+      ifdef DOCKER_AVAILABLE
+        DOCKER_IMAGE_EXISTS := $(shell docker image inspect $(NANVIX_DOCKER_IMAGE) >/dev/null 2>&1 && echo yes)
+        ifdef DOCKER_IMAGE_EXISTS
+          CONFIG_NANVIX_DOCKER := y
+          $(info [INFO] Native toolchain not found at $(NANVIX_TOOLCHAIN), using Docker image $(NANVIX_DOCKER_IMAGE))
+        else
+          $(error Docker image $(NANVIX_DOCKER_IMAGE) not found. Run: docker pull $(NANVIX_DOCKER_IMAGE))
+        endif
+      else
+        $(error Nanvix toolchain not found at $(NANVIX_TOOLCHAIN) and Docker is not available)
+      endif
+    endif
+  else
+    DOCKER_AVAILABLE := $(shell command -v docker 2>/dev/null)
+    ifndef DOCKER_AVAILABLE
+      $(error CONFIG_NANVIX_DOCKER=y but Docker is not installed)
+    endif
+    DOCKER_IMAGE_EXISTS := $(shell docker image inspect $(NANVIX_DOCKER_IMAGE) >/dev/null 2>&1 && echo yes)
+    ifndef DOCKER_IMAGE_EXISTS
+      $(error Docker image $(NANVIX_DOCKER_IMAGE) not found. Run: docker pull $(NANVIX_DOCKER_IMAGE))
+    endif
+    $(info [INFO] Using Docker image $(NANVIX_DOCKER_IMAGE) (explicitly requested))
+  endif
+
+  ifdef CONFIG_NANVIX_DOCKER
+    DOCKER_TOOLCHAIN_PATH := /opt/nanvix
+    DOCKER_SYSROOT_PATH := /mnt/sysroot
+    DOCKER_WORKSPACE_PATH := /mnt/workspace
+    DOCKER_UID := $(shell id -u)
+    DOCKER_GID := $(shell id -g)
+    DOCKER_RUN := docker run --rm --user $(DOCKER_UID):$(DOCKER_GID) \
+      -v $(CURDIR):$(DOCKER_WORKSPACE_PATH) \
+      -v $(NANVIX_HOME):$(DOCKER_SYSROOT_PATH):ro \
+      -w $(DOCKER_WORKSPACE_PATH) \
+      -e HOME=/tmp \
+      $(NANVIX_DOCKER_IMAGE)
+    CC := $(DOCKER_RUN) $(DOCKER_TOOLCHAIN_PATH)/bin/i686-nanvix-gcc
+    CXX := $(DOCKER_RUN) $(DOCKER_TOOLCHAIN_PATH)/bin/i686-nanvix-g++
+    AR := $(DOCKER_RUN) $(DOCKER_TOOLCHAIN_PATH)/bin/i686-nanvix-ar
+    SYSROOT_INCLUDE := $(DOCKER_SYSROOT_PATH)/include
+  else
+    CC := $(NANVIX_TOOLCHAIN)/bin/i686-nanvix-gcc
+    CXX := $(NANVIX_TOOLCHAIN)/bin/i686-nanvix-g++
+    AR := $(NANVIX_TOOLCHAIN)/bin/i686-nanvix-ar
+    SYSROOT_INCLUDE := $(abspath $(NANVIX_HOME))/include
+  endif
+else
+  ifneq ($(MAKECMDGOALS),clean)
+    $(error CONFIG_NANVIX must be set to 'y'. Usage: make -f Makefile.nanvix CONFIG_NANVIX=y NANVIX_HOME=/path/to/nanvix)
+  endif
+endif
+
+COMMON_FLAGS = -O2 -I$(SYSROOT_INCLUDE) -I$(SYSROOT_INCLUDE)/python3.12
+UJSON_CFLAGS = $(COMMON_FLAGS) -Isrsly/ujson/lib -Isrsly/ujson
+MSGPACK_CXXFLAGS = $(COMMON_FLAGS) -Isrsly
+ARFLAGS = rcs
+
+UJSON_LIB = libsrsly_ujson.a
+PACKER_LIB = libsrsly_msgpack_packer.a
+UNPACKER_LIB = libsrsly_msgpack_unpacker.a
+EPOCH_LIB = libsrsly_msgpack_epoch.a
+
+UJSON_OBJS = ujson.o objToJSON.o JSONtoObj.o ultrajsonenc.o ultrajsondec.o
+ALL_LIBS = $(UJSON_LIB) $(PACKER_LIB) $(UNPACKER_LIB) $(EPOCH_LIB)
+
+all: $(ALL_LIBS)
+
+# ujson
+$(UJSON_LIB): $(UJSON_OBJS)
+	$(AR) $(ARFLAGS) $@ $(UJSON_OBJS)
+
+ujson.o: srsly/ujson/ujson.c
+	$(CC) $(UJSON_CFLAGS) -c -o $@ $<
+
+objToJSON.o: srsly/ujson/objToJSON.c
+	$(CC) $(UJSON_CFLAGS) -c -o $@ $<
+
+JSONtoObj.o: srsly/ujson/JSONtoObj.c
+	$(CC) $(UJSON_CFLAGS) -c -o $@ $<
+
+ultrajsonenc.o: srsly/ujson/lib/ultrajsonenc.c
+	$(CC) $(UJSON_CFLAGS) -c -o $@ $<
+
+ultrajsondec.o: srsly/ujson/lib/ultrajsondec.c
+	$(CC) $(UJSON_CFLAGS) -c -o $@ $<
+
+# msgpack
+$(PACKER_LIB): _packer.o
+	$(AR) $(ARFLAGS) $@ $^
+
+$(UNPACKER_LIB): _unpacker.o
+	$(AR) $(ARFLAGS) $@ $^
+
+$(EPOCH_LIB): _epoch.o
+	$(AR) $(ARFLAGS) $@ $^
+
+_packer.o: srsly/msgpack/_packer.cpp
+	$(CXX) $(MSGPACK_CXXFLAGS) -c -o $@ $<
+
+_unpacker.o: srsly/msgpack/_unpacker.cpp
+	$(CXX) $(MSGPACK_CXXFLAGS) -c -o $@ $<
+
+_epoch.o: srsly/msgpack/_epoch.cpp
+	$(CXX) $(MSGPACK_CXXFLAGS) -c -o $@ $<
+
+install: $(ALL_LIBS)
+	mkdir -p "$(DESTDIR)$(PREFIX)/lib"
+	install -m644 $(ALL_LIBS) "$(DESTDIR)$(PREFIX)/lib/"
+
+clean:
+	rm -f *.o $(ALL_LIBS)
+
+.PHONY: all clean install
